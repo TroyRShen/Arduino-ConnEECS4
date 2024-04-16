@@ -1,0 +1,300 @@
+#include <RGBmatrixPanel.h>
+#include <gamma.h>
+#include <Adafruit_GFX.h>
+
+#define CLK 11
+#define OE   9
+#define LAT A4
+#define A   A0
+#define B   A1
+#define C   A2
+#define D   A3
+
+RGBmatrixPanel matrix(A, B, C, D, CLK, LAT, OE, false, 64);
+
+// below this is ok to move from Wowki
+
+// define the wiring of the inputs
+const int POTENTIOMETER_PIN_NUMBER = 5;
+const int BUTTON_PIN_NUMBER = 10;
+
+//smoothing
+const int NUM_READINGS = 10;
+
+int readings[NUM_READINGS];  // the readings from the analog input
+int readIndex = 0;          // the index of the current reading
+int total = 0;              // the running total
+int average = 0;            // the average
+
+class Color {
+  public:
+    int red;
+    int green;
+    int blue;
+    Color() {
+      red = 0;
+      green = 0;
+      blue = 0;
+    }
+    Color(int r, int g, int b) {
+      red = r;
+      green = g;
+      blue = b;
+    }
+    uint16_t to_333() const {
+      return matrix.Color333(red, green, blue);
+    }
+};
+
+const Color BLACK(0, 0, 0);
+const Color RED(4, 0, 0);
+const Color ORANGE(6, 1, 0);
+const Color YELLOW(4, 4, 0);
+const Color GREEN(0, 4, 0);
+const Color BLUE(0, 0, 4);
+const Color PURPLE(1, 0, 2);
+const Color WHITE(4, 4, 4);
+const Color LIME(2, 4, 0);
+const Color AQUA(0, 4, 4);
+
+const int BOARD_X = 32;
+const int BOARD_Y = 16;
+
+const int NUM_ROWS = 6;
+const int NUM_COLS = 7;
+
+class Chip {
+  public:
+    Chip() {
+      color = 0;
+    }
+    short getColor() {
+      return color;
+    }
+    void setColor(short cArg) {
+      color = cArg;
+    }
+  private:
+    // 0 = none; 1 = red; 2 = blue
+    short color;
+};
+
+class Player {
+  public:
+    //put here for convenience
+    bool fired;
+    Player() {
+      //will always be odd - set in middle
+      x = NUM_COLS - 1 + NUM_COLS % 2;
+      //doesnt change unless button click
+      y = BOARD_Y - NUM_ROWS * 2 - 2;
+      color = false;
+      fired = false;
+    }
+
+    //reset player to default
+    void reset() {
+      //will always be odd - set in middle
+      x = NUM_COLS - 1 + NUM_COLS % 2;
+      //starts 1 above grid
+      y = BOARD_Y - NUM_ROWS * 2 - 2;
+      color = false;
+      fired = false;
+    }
+
+    //getters & setters
+    int getX() {
+      return x;
+    }
+    void setX(int xArg) {
+      //make sure that player hasn't fired
+      if (!fired) {
+        x = xArg;
+      }
+    }
+    int getY() {
+      return y;
+    }
+    int setY(int yArg) {
+      y = yArg;
+    }
+    int getColor() {
+      if (color) {
+        //blue
+        return 2;
+      } else {
+        //red
+        return 1;
+      }
+    }
+    int toggleColor() {
+      color = !color;
+    }
+
+    void move() {
+      if (fired) {
+        //erasing only certain pixel
+        matrix.drawPixel(x, y, BLACK.to_333());
+        y+=2;
+        draw();
+      }
+    }
+
+    //draw player
+    void draw() {
+      //figure out which color is chip
+      Color currentColor = RED;
+      if (color) {
+        currentColor = BLUE;
+      }
+      matrix.drawPixel(x, y, currentColor.to_333());
+    }
+
+    void erase() {
+      //just in case of glitch
+      if (!fired) {
+        matrix.drawPixel(x - 1, y, BLACK.to_333());
+        matrix.drawPixel(x, y, BLACK.to_333());
+        matrix.drawPixel(x + 1, y, BLACK.to_333());
+      }
+    }
+
+  private:
+    int x;
+    int y;
+    //false = red; true = blue;
+    //toggle using ! feature
+    bool color;
+};
+
+void colorInGrid() {
+  // starting @(0,15) color in every other point white for grid (7 rows & 8 cols)
+  //x is COLS y is ROWS
+  for (int i = 0; i < NUM_COLS + 1; i++) {
+    for (int j = 0; j < NUM_ROWS + 1; j++) {
+      matrix.drawPixel(i * 2, BOARD_Y - j * 2 - 1, WHITE.to_333());
+    }
+  }
+}
+
+class Game {
+  public:
+    void setupGame() {
+      //reset screen
+      board[5][7].setColor(0);
+      Serial.println(board[5][7].getColor());
+      matrix.fillScreen(BLACK.to_333());
+      player.reset();
+
+      colorInGrid();
+    }
+
+    void update(int potentiometer_value, bool button_pressed) {
+      time = millis();
+
+      //for smoothness
+      changeInTime += time - prevTime;
+      prevTime = time;
+      
+      //might not need this tbh
+      bool secTick = false;
+
+      //7 total positions for player to be
+      int potentiometerPos = potentiometer_value / 128;
+
+      //check if chip shot
+      if (button_pressed) {
+        player.fired = true;
+        droppedColPos = potentiometerPos;
+      }
+
+      if (player.fired) {
+        //check for collision
+        // if chip two below or bottom
+        if (board[droppedRowPos][droppedColPos].getColor() != 0 
+          || droppedRowPos == 6) {
+          //set chip color there to respective color depending on situation
+          if (droppedRowPos != 0) {
+            board[droppedRowPos - 1][droppedColPos].setColor(player.getColor());
+            totalChipsDropped++;
+            //then toggle color
+            player.toggleColor();
+          }
+
+          //reset player
+          droppedRowPos = 0;
+          droppedColPos = 0;
+          player.setY(BOARD_Y - NUM_ROWS * 2 - 2);
+          player.fired = false;
+
+          //some sort of function toggle using 
+          //matrix.fillRect(0, 0, 32, 16, matrix.Color333(0, 7, 0));
+        } else if (time % 25 == 0) {
+          player.move();
+          droppedRowPos++;
+        }
+      }
+
+      //movement
+      if (potentiometerPos != previousPotentiometerVal) {
+        player.erase();
+        player.setX(potentiometerPos * 2 - 1);
+      }
+      player.draw();
+    }
+  private:
+    int previousPotentiometerVal = 0;
+    //for checking if any chips below dropped one
+    int droppedColPos = 0;
+    int droppedRowPos = 0;
+    //for checking if all chips dropped
+    int totalChipsDropped = 0;
+    unsigned long time;
+    unsigned long prevTime = 0;
+    unsigned long changeInTime = 0;
+    Player player;
+    Chip board[NUM_ROWS][NUM_COLS];
+};
+
+//global variable that represents ConnEECS4 game
+Game game;
+
+void setup() {
+  Serial.begin(9600);
+  pinMode(BUTTON_PIN_NUMBER, INPUT);
+
+  //set intial values
+  for (int i = 0; i < NUM_READINGS; i++) {
+    readings[i] = 0;
+  }
+
+  matrix.begin();
+  game.setupGame();
+
+  //do not include
+  matrix.drawPixel(BOARD_X, BOARD_Y, GREEN.to_333());
+  matrix.drawPixel(BOARD_X, 0, GREEN.to_333());
+  matrix.drawPixel(0, BOARD_Y, GREEN.to_333());
+}
+
+// see https://www.arduino.cc/reference/en/language/structure/sketch/loop/
+void loop() {
+  //more smoothing
+  total = total - readings[readIndex];
+  readings[readIndex] = analogRead(POTENTIOMETER_PIN_NUMBER);
+  total = total + readings[readIndex];
+  readIndex = readIndex + 1;
+
+  //wrap if at end
+  if (readIndex >= NUM_READINGS) {
+    readIndex = 0;
+  }
+  
+  //average is reading + delay for more smoothing
+  int potentiometer_value = total / NUM_READINGS;
+  delay(1);
+
+  bool button_pressed = (digitalRead(BUTTON_PIN_NUMBER) == HIGH);
+  
+  game.update(potentiometer_value, button_pressed);
+}
